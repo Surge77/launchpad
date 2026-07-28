@@ -129,8 +129,28 @@ def sleeper(name: str = "run") -> Task:
     return Task(name=name, cmd=f'{Path(sys.executable).stem} -c "import time; time.sleep(30)"')
 
 
-def http_server_task(port: int, name: str = "web") -> Task:
-    return Task(name=name, cmd=f"{Path(sys.executable).stem} -m http.server {port}", port=port)
+PORT_HOLDER_SCRIPT = """
+import socket, sys, time
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(("127.0.0.1", int(sys.argv[1])))
+sock.listen(64)
+print("listening", flush=True)
+time.sleep(120)
+"""
+
+
+def port_holder_task(tmp_path: Path, port: int, name: str = "web") -> Task:
+    """A child process holding a port on an address the test controls.
+
+    Deliberately not `python -m http.server`: that picks its own bind address
+    (dual-stack `::` where available), which made readiness probes to 127.0.0.1
+    environment-dependent. Binding explicitly keeps the test about `free_port`
+    and restart behavior rather than about another tool's socket defaults.
+    """
+    script = tmp_path / "port_holder.py"
+    script.write_text(PORT_HOLDER_SCRIPT, encoding="utf-8")
+    return Task(name=name, cmd=f"{Path(sys.executable).stem} {script.name} {port}", port=port)
 
 
 def test_restart_project_replaces_the_process(tmp_path: Path) -> None:
@@ -160,7 +180,7 @@ def test_restart_works_when_nothing_was_running(tmp_path: Path) -> None:
 def test_restart_frees_its_own_port_before_relaunch(tmp_path: Path) -> None:
     """The relaunch must not hit EADDRINUSE against the process it just killed."""
     port = _free_port_number()
-    project = Project(name="demo", path=tmp_path, stack="Py", tasks=(http_server_task(port),))
+    project = Project(name="demo", path=tmp_path, stack="Py", tasks=(port_holder_task(tmp_path, port),))
     first = runner.start_project(project)
     _require_serving(first[0])
 
@@ -191,7 +211,7 @@ def test_free_port_returns_none_when_port_is_idle() -> None:
 
 def test_free_port_kills_the_listening_process(tmp_path: Path) -> None:
     port = _free_port_number()
-    project = Project(name="squatter", path=tmp_path, stack="Py", tasks=(http_server_task(port),))
+    project = Project(name="squatter", path=tmp_path, stack="Py", tasks=(port_holder_task(tmp_path, port),))
     started = runner.start_project(project)
     _require_serving(started[0])
 
