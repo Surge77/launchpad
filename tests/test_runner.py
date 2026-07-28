@@ -248,6 +248,39 @@ def _free_port_number() -> int:
         return probe.getsockname()[1]
 
 
+def test_child_environment_is_unbuffered(tmp_path: Path) -> None:
+    """Dev server output must reach the log immediately, not when a buffer fills."""
+    project = Project(name="demo", path=tmp_path, stack="Py", tasks=())
+    task = Task(
+        name="print",
+        cmd=f'{Path(sys.executable).stem} -c "import time; print(\'hello\'); time.sleep(5)"',
+    )
+    result = runner.start_task(project, task, wait_for_port=False)
+
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if "hello" in Path(result.log_path).read_text(encoding="utf-8", errors="replace"):
+                return
+            time.sleep(0.1)
+        pytest.fail(f"output never flushed:\n{_log_dump(result)}")
+    finally:
+        runner.stop_project("demo")
+
+
+def test_task_env_overrides_the_unbuffered_default(tmp_path: Path) -> None:
+    project = Project(name="demo", path=tmp_path, stack="Py", tasks=())
+    script = f'{Path(sys.executable).stem} -c "import os; print(os.environ[\'PYTHONUNBUFFERED\'])"'
+    task = Task(name="env", cmd=script, env={"PYTHONUNBUFFERED": "0"})
+    result = runner.start_task(project, task, wait_for_port=False)
+
+    try:
+        time.sleep(1.5)
+        assert "0" in Path(result.log_path).read_text(encoding="utf-8", errors="replace")
+    finally:
+        runner.stop_project("demo")
+
+
 def test_wait_for_port_open_times_out_quickly() -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))

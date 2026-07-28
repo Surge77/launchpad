@@ -89,7 +89,11 @@ def start_task(project: Project, task: Task, *, wait_for_port: bool = True) -> L
     log_path = _log_path(project.name, task.name)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    env = {**os.environ, **task.env}
+    # Python block-buffers stdout when it is a file rather than a tty, so a dev
+    # server's output would not reach the log (or the TUI) until a 8 KB buffer
+    # filled — including the traceback of a crash on startup. Task env wins, so
+    # a project can opt out.
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", **task.env}
     with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
         log_file.write(f"$ {task.cmd}\n[cwd] {cwd}\n\n")
         log_file.flush()
