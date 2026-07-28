@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from launchpad import runner, state
+from launchpad import preflight, runner, state
 from launchpad.config import Project, Task
 
 
@@ -207,6 +207,39 @@ def test_start_project_records_usage(tmp_path: Path) -> None:
 
 def test_free_port_returns_none_when_port_is_idle() -> None:
     assert runner.free_port(_free_port_number()) is None
+
+
+def test_free_port_uses_tracked_state_when_owner_cannot_be_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Identifying a socket's owner needs root on macOS; our own records don't."""
+    monkeypatch.setattr(preflight, "listening_ports", dict)
+    port = _free_port_number()
+    project = Project(name="squatter", path=tmp_path, stack="Py", tasks=(port_holder_task(tmp_path, port),))
+    started = runner.start_project(project)
+    _require_serving(started[0])
+
+    try:
+        owner = runner.free_port(port)
+
+        assert owner is not None
+        assert owner.name == "squatter/web"
+        assert runner.is_port_open(port) is False
+    finally:
+        runner.stop_project("squatter")
+
+
+def test_free_port_returns_none_for_unidentifiable_foreign_holder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never guess a PID: refusing to act beats killing the wrong process."""
+    monkeypatch.setattr(preflight, "listening_ports", dict)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(8)
+        port = server.getsockname()[1]
+
+        assert runner.free_port(port) is None
+        assert runner.is_port_open(port) is True, "the foreign listener must survive"
 
 
 def test_free_port_kills_the_listening_process(tmp_path: Path) -> None:

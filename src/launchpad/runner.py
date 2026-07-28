@@ -67,13 +67,27 @@ def _wait_for_port_release(port: int, timeout: float = PORT_RELEASE_SECONDS) -> 
 
 
 def free_port(port: int) -> preflight.PortOwner | None:
-    """Kill whatever is listening on `port`. Destructive — callers must opt in."""
-    owner = preflight.port_owner(port)
+    """Kill whatever is listening on `port`. Destructive — callers must opt in.
+
+    Returns None when the holder cannot be identified, which is not the same as
+    "nothing was there": naming a socket's owner needs root on macOS. Callers
+    must treat None as a failure to free rather than success, and never guess at
+    a PID — killing the wrong process is worse than refusing to launch.
+    """
+    owner = preflight.port_owner(port) or _tracked_port_owner(port)
     if owner is None or owner.pid <= 0:
         return None
     _kill_tree(owner.pid)
     _wait_for_port_release(port)
     return owner
+
+
+def _tracked_port_owner(port: int) -> preflight.PortOwner | None:
+    """Fall back to launchpad's own records, which hold the PID we started."""
+    for task in state.prune():
+        if task.port == port:
+            return preflight.PortOwner(pid=task.pid, name=f"{task.project}/{task.task}")
+    return None
 
 
 def start_task(project: Project, task: Task, *, wait_for_port: bool = True) -> LaunchResult:

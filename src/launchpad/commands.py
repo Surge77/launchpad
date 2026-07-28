@@ -88,7 +88,10 @@ def _launch_one(project: Project, *, editor: bool, wait: bool, force: bool, rest
             sys.stdout.flush()
             print("  ✗ pre-flight failed — fix the above, or re-run with --force", file=sys.stderr)
             return 1
-        _force_free_ports(project)
+        if not _force_free_ports(project):
+            sys.stdout.flush()
+            print("  ✗ could not free every port — aborting", file=sys.stderr)
+            return 1
 
     try:
         if editor:
@@ -107,13 +110,22 @@ def _launch_one(project: Project, *, editor: bool, wait: bool, force: bool, rest
     return 0
 
 
-def _force_free_ports(project: Project) -> None:
+def _force_free_ports(project: Project) -> bool:
+    """Free every port this project needs. False if any could not be freed."""
+    freed_all = True
     for task in project.tasks:
-        if task.port is None:
+        if task.port is None or not preflight.is_listening(task.port):
             continue
         owner = runner.free_port(task.port)
         if owner is not None:
             print(f"  ■ freed port {task.port} — killed {owner.render()}")
+        else:
+            freed_all = False
+            print(
+                f"  ✗ port {task.port} is busy but its owner cannot be identified "
+                "(needs root on macOS) — stop it manually"
+            )
+    return freed_all
 
 
 def cmd_restart(root: Path, name: str, *, wait: bool) -> int:

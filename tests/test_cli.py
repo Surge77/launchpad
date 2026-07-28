@@ -171,6 +171,7 @@ def test_force_frees_the_port_then_launches(
     monkeypatch.setattr(
         preflight, "check_project", lambda project, check_ports=True: [preflight.Check("error", "port 3000 held")]
     )
+    monkeypatch.setattr(preflight, "is_listening", lambda port, host="127.0.0.1": True)
     monkeypatch.setattr(runner, "free_port", lambda port: preflight.PortOwner(pid=9, name="node.exe"))
 
     exit_code = cli.main(["--root", str(workspace), "up", "collabboard", "--no-editor", "--force"])
@@ -178,6 +179,28 @@ def test_force_frees_the_port_then_launches(
     assert exit_code == 0
     assert "freed port 3000" in capsys.readouterr().out
     assert no_op_launch == ["collabboard"]
+
+
+def test_force_aborts_when_a_port_cannot_be_freed(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_op_launch: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--force must not proceed into an EADDRINUSE crash it can't prevent."""
+    monkeypatch.setattr(
+        preflight, "check_project", lambda project, check_ports=True: [preflight.Check("error", "port 3000 held")]
+    )
+    monkeypatch.setattr(preflight, "is_listening", lambda port, host="127.0.0.1": True)
+    monkeypatch.setattr(runner, "free_port", lambda port: None)
+
+    exit_code = cli.main(["--root", str(workspace), "up", "collabboard", "--no-editor", "--force"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "cannot be identified" in captured.out
+    assert "could not free every port" in captured.err
+    assert no_op_launch == [], "must not launch when a needed port is still busy"
 
 
 def test_up_warns_but_proceeds_on_warning_level_check(
