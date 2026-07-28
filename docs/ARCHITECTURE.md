@@ -77,7 +77,7 @@ All reads tolerate corruption: malformed JSON or entries with missing/mistyped k
 | `state` | Uses the live process's real PID and `create_time` so the identity check is exercised for real, not mocked |
 | `runner` | Spawns real `python -m http.server` processes, binds real ports, then kills them |
 | `commands` / `cli` | Real discovery over temp trees, with `runner`/`preflight` monkeypatched at the seam |
-| `tui` | Manual. Textual widget wiring isn't unit-tested; 24% coverage is expected |
+| `tui` | Textual's `run_test()` pilot: real key presses against a real widget tree, asserting focus ownership, filtering, binding dispatch, and timer cleanup |
 
 Tests never call the network, and every test that touches state redirects `LAUNCHPAD_HOME` into `tmp_path` via an autouse fixture, keeping them order-independent.
 

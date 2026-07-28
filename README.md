@@ -4,7 +4,7 @@
 
 Editor opens, every dev server and sidecar starts, ports are checked before anything boots, logs stream into one pane, and one more keystroke tears the whole process tree down.
 
-Scans **32 repos in 151 ms** (median of 7 cold runs, Windows 11, NVMe) and derives run commands for **18 of them with zero configuration**. 167 tests, 82% coverage, pyright clean.
+Scans **32 repos in 151 ms** (median of 7 cold runs, Windows 11, NVMe) and derives run commands for **18 of them with zero configuration**. 178 tests, 90% coverage, pyright clean, CI green on Linux/macOS/Windows.
 
 ```
 $ launch
@@ -168,7 +168,7 @@ python -m pytest --cov=launchpad --cov-report=term-missing
 python -m pyright
 ```
 
-**167 tests · 82% line coverage · 0 pyright errors.**  Non-UI modules run 89–97%; `tui.py` is at 24% by design — Textual widget wiring is verified by hand, and the launch → probe → stop cycle is covered end-to-end against a real HTTP server binding a real port.
+**178 tests · 90% line coverage · 0 pyright errors.** Non-UI modules run 90–97%; `tui.py` is at 74%, driven through Textual's `run_test()` pilot — real key presses against a real widget tree, asserting focus ownership, filtering, and binding dispatch. The launch → probe → stop cycle is covered end-to-end against a child process binding a real port.
 
 CI runs both gates on Linux, macOS, and Windows against Python 3.11 and 3.12.
 

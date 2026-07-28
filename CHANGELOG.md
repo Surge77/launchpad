@@ -22,6 +22,17 @@ First release.
 - **Frecency ordering** — projects launched often and recently sort to the top.
 - **Parallel git status** — branch, dirty count, and ahead/behind across all repos via a thread pool.
 
+### Fixed before release
+
+Found by driving the TUI headlessly through Textual's `run_test()` pilot — the CLI had been exercised end-to-end, but the TUI had only ever been type-checked:
+
+- `LaunchpadApp` assigned `self.visible`, which is a CSS property on Textual's `DOMNode`; the app raised `TypeError` on construction, so `launch` with no arguments never started.
+- `self._timers` collided with `MessagePump`'s own timer set, breaking first mount.
+- A `display: none` widget still accepts focus, and the filter `Input` is first in the DOM — so the hidden filter box owned the keyboard at startup and every binding (`enter`, `e`, `s`, `d`) was swallowed. The table now takes focus on mount, and the input is only focusable while open.
+- Poll timers outlived the widget tree, querying a torn-down DOM on quit.
+
+`tests/test_tui.py` now asserts focus ownership, filter behavior, binding dispatch, timer cleanup, and that no instance attribute shadows a Textual internal.
+
 ### Platform notes
 
 - Busy ports are detected without elevated privileges via a TCP probe. Identifying *which* process holds a port needs root on macOS; when it can't be identified, launchpad reports that plainly instead of treating the port as free.

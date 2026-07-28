@@ -34,7 +34,9 @@ These are not style preferences. Violating them breaks correctness or safety.
 - Tests that spawn processes must stop them in a `finally`.
 - Get free ports by binding `127.0.0.1:0`. No network access.
 - Don't mock `psutil` in `state`/`runner` tests — the OS behavior *is* the thing under test. Monkeypatch at the `runner`/`preflight` seam for CLI tests.
-- 80% coverage minimum. `tui.py` is exempt (Textual wiring, verified manually).
+- 80% coverage minimum, including `tui.py` — drive it through Textual's `run_test()` pilot with real key presses (`tests/test_tui.py`), never by mocking widgets.
+- **Never name a `LaunchpadApp` attribute after a Textual internal.** `visible` (a `DOMNode` CSS property) and `_timers` (a `MessagePump` set) both broke the app at startup. `test_app_attributes_do_not_shadow_textual_internals` guards this; keep it passing.
+- Any change to TUI focus handling must keep the DataTable focused at rest — a `display: none` widget still accepts focus, and a focused hidden Input silently eats every binding.
 
 ## Where things live
 

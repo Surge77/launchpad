@@ -7,6 +7,7 @@ from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.timer import Timer
 from textual.widgets import DataTable, Footer, Header, Input, Log
 
 from launchpad import gitinfo, logs, preflight, runner, state, usage
@@ -35,6 +36,7 @@ class LaunchpadApp(App[None]):
         Binding("d", "doctor", "doctor"),
         Binding("f", "force", "force"),
         Binding("slash", "filter", "filter"),
+        Binding("escape", "close_filter", "clear filter", show=False),
         Binding("r", "rescan", "rescan"),
         Binding("q", "quit", "quit"),
     ]
@@ -43,10 +45,15 @@ class LaunchpadApp(App[None]):
         super().__init__()
         self.root = root
         self.projects: list[Project] = []
-        self.visible: list[Project] = []
+        # Attribute names here must not shadow Textual's own: `visible` is a CSS
+        # property on DOMNode and `_timers` is a set on MessagePump, and either
+        # collision breaks the app at construction or first mount. test_tui.py
+        # asserts this class adds no colliding names.
+        self.matching: list[Project] = []
         self.git: dict[str, gitinfo.GitStatus] = {}
         self._followers: dict[str, logs.LogFollower] = {}
         self._followed_project: str | None = None
+        self._poll_timers: list[Timer] = []
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -58,10 +65,30 @@ class LaunchpadApp(App[None]):
 
     def on_mount(self) -> None:
         self.title = "launchpad"
-        self.query_one("#projects", DataTable).add_columns(*COLUMNS)
+        table = self.query_one("#projects", DataTable)
+        table.add_columns(*COLUMNS)
+        # A `display: none` widget still accepts focus in Textual, and the Input
+        # is first in the DOM — so without this the hidden filter box owned the
+        # keyboard at startup and every binding (enter/e/s/d) was swallowed.
+        self.query_one("#filter", Input).can_focus = False
+        table.focus()
         self.action_rescan()
-        self.set_interval(LOG_POLL_SECONDS, self._pump_logs)
-        self.set_interval(GIT_REFRESH_SECONDS, self._refresh_git)
+        self._poll_timers = [
+            self.set_interval(LOG_POLL_SECONDS, self._pump_logs),
+            self.set_interval(GIT_REFRESH_SECONDS, self._refresh_git),
+        ]
+
+    def on_unmount(self) -> None:
+        # Timers outlive the widget tree otherwise, and the next tick queries a
+        # DOM that no longer exists — a NoMatches traceback on quit.
+        for timer in self._poll_timers:
+            timer.stop()
+        self._poll_timers = []
+
+    def _table(self) -> DataTable | None:
+        """None once the DOM is gone, so timer ticks during teardown are quiet."""
+        found = self.query("#projects").results(DataTable)
+        return next(iter(found), None)
 
     # -- actions ---------------------------------------------------------
 
@@ -73,8 +100,21 @@ class LaunchpadApp(App[None]):
 
     def action_filter(self) -> None:
         field = self.query_one("#filter", Input)
+        field.can_focus = True
         field.add_class("visible")
         field.focus()
+
+    def action_close_filter(self) -> None:
+        field = self.query_one("#filter", Input)
+        field.value = ""
+        self._hide_filter(field)
+
+    def _hide_filter(self, field: Input) -> None:
+        field.remove_class("visible")
+        field.can_focus = False
+        table = self._table()
+        if table is not None:
+            table.focus()
 
     def action_launch(self) -> None:
         self._launch(force=False)
@@ -126,8 +166,7 @@ class LaunchpadApp(App[None]):
         self._apply_filter(event.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        event.input.remove_class("visible")
-        self.query_one("#projects", DataTable).focus()
+        self._hide_filter(event.input)
 
     # -- launching -------------------------------------------------------
 
@@ -200,15 +239,17 @@ class LaunchpadApp(App[None]):
 
     def _apply_filter(self, needle: str) -> None:
         lowered = needle.strip().lower()
-        self.visible = [p for p in self.projects if lowered in p.name.lower()] if lowered else list(self.projects)
+        self.matching = [p for p in self.projects if lowered in p.name.lower()] if lowered else list(self.projects)
         self._refresh_rows()
 
     def _refresh_rows(self) -> None:
-        table = self.query_one("#projects", DataTable)
+        table = self._table()
+        if table is None:
+            return
         cursor = table.cursor_row
         table.clear()
         running = {task.project for task in state.prune()}
-        for project in self.visible:
+        for project in self.matching:
             active = project.name in running
             branch = self.git.get(project.name)
             table.add_row(
@@ -222,10 +263,10 @@ class LaunchpadApp(App[None]):
             table.move_cursor(row=min(max(cursor, 0), table.row_count - 1))
 
     def _selected(self) -> Project | None:
-        table = self.query_one("#projects", DataTable)
-        if not self.visible or not 0 <= table.cursor_row < len(self.visible):
+        table = self._table()
+        if table is None or not self.matching or not 0 <= table.cursor_row < len(self.matching):
             return None
-        return self.visible[table.cursor_row]
+        return self.matching[table.cursor_row]
 
     def _log(self, message: str) -> None:
         self.query_one("#output", Log).write_line(message)
