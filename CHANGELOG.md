@@ -22,6 +22,13 @@ First release.
 - **Frecency ordering** — projects launched often and recently sort to the top.
 - **Parallel git status** — branch, dirty count, and ahead/behind across all repos via a thread pool.
 
+### Platform notes
+
+- Busy ports are detected without elevated privileges via a TCP probe. Identifying *which* process holds a port needs root on macOS; when it can't be identified, launchpad reports that plainly instead of treating the port as free.
+- `--force` frees ports owned by servers launchpad started on any platform (using its own tracked PIDs) and refuses to guess at an unidentifiable foreign holder.
+- Child processes inherit `PYTHONUNBUFFERED=1` so Python dev-server output reaches logs immediately.
+- CI verifies Linux, macOS, and Windows on Python 3.11 and 3.12.
+
 ### Security
 
 - Task commands never reach a shell: `shlex` splitting plus `shutil.which` resolution of `argv[0]`, which also makes Windows `.cmd` shims work without `shell=True`.

@@ -4,7 +4,7 @@
 
 Editor opens, every dev server and sidecar starts, ports are checked before anything boots, logs stream into one pane, and one more keystroke tears the whole process tree down.
 
-Scans **32 repos in 151 ms** (median of 7 cold runs, Windows 11, NVMe) and derives run commands for **18 of them with zero configuration**. 159 tests, 82% coverage, pyright clean.
+Scans **32 repos in 151 ms** (median of 7 cold runs, Windows 11, NVMe) and derives run commands for **18 of them with zero configuration**. 167 tests, 82% coverage, pyright clean.
 
 ```
 $ launch
@@ -108,9 +108,9 @@ collabboard (TS)
 1 blocking issue(s)
 ```
 
-`launch up collabboard --force` kills the squatter and proceeds.
+`launch up collabboard --force` kills the squatter and proceeds. If the holder genuinely can't be identified — naming a socket's owner needs root on macOS, and launchpad won't guess a PID — it says so and aborts rather than launching into the crash it was meant to prevent. Ports held by servers launchpad itself started are always identifiable, root or not.
 
-**Live log streaming.** Every task's stdout/stderr lands in a log file and streams into the TUI pane, prefixed per task. `launch logs <name> -f` does the same in a plain terminal.
+**Live log streaming.** Every task's stdout/stderr lands in a log file and streams into the TUI pane, prefixed per task. `launch logs <name> -f` does the same in a plain terminal. Children run with `PYTHONUNBUFFERED=1`, so a Python server's output — including a startup traceback — shows up immediately instead of sitting in an 8 KB buffer.
 
 **Frecency ordering.** Projects you launch often and recently rise to the top — one recent launch outranks a month-stale favourite, so the list tracks what you're working on now.
 
@@ -168,7 +168,7 @@ python -m pytest --cov=launchpad --cov-report=term-missing
 python -m pyright
 ```
 
-**159 tests · 82% line coverage · 0 pyright errors.**  Non-UI modules run 89–97%; `tui.py` is at 24% by design — Textual widget wiring is verified by hand, and the launch → probe → stop cycle is covered end-to-end against a real HTTP server binding a real port.
+**167 tests · 82% line coverage · 0 pyright errors.**  Non-UI modules run 89–97%; `tui.py` is at 24% by design — Textual widget wiring is verified by hand, and the launch → probe → stop cycle is covered end-to-end against a real HTTP server binding a real port.
 
 CI runs both gates on Linux, macOS, and Windows against Python 3.11 and 3.12.
 
