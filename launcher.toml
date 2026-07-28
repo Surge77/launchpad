@@ -1,0 +1,6 @@
+# launchpad launches itself. Dogfooding, and a live example of this file format.
+editor = "code"
+
+[[task]]
+name = "tests"
+cmd = "python -m pytest -q"

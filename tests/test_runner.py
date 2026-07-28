@@ -124,6 +124,114 @@ def test_is_port_open_false_for_closed_port() -> None:
     assert runner.is_port_open(port) is False
 
 
+def sleeper(name: str = "run") -> Task:
+    return Task(name=name, cmd=f'{Path(sys.executable).stem} -c "import time; time.sleep(30)"')
+
+
+def http_server_task(port: int, name: str = "web") -> Task:
+    return Task(name=name, cmd=f"{Path(sys.executable).stem} -m http.server {port}", port=port)
+
+
+def test_restart_project_replaces_the_process(tmp_path: Path) -> None:
+    project = Project(name="demo", path=tmp_path, stack="Py", tasks=(sleeper(),))
+    first = runner.start_project(project, wait_for_ports=False)[0]
+
+    try:
+        second = runner.restart_project(project, wait_for_ports=False)[0]
+
+        assert second.pid != first.pid
+        assert [task.pid for task in state.for_project("demo")] == [second.pid]
+    finally:
+        runner.stop_project("demo")
+
+
+def test_restart_works_when_nothing_was_running(tmp_path: Path) -> None:
+    project = Project(name="demo", path=tmp_path, stack="Py", tasks=(sleeper(),))
+
+    try:
+        results = runner.restart_project(project, wait_for_ports=False)
+
+        assert len(results) == 1
+    finally:
+        runner.stop_project("demo")
+
+
+def test_restart_frees_its_own_port_before_relaunch(tmp_path: Path) -> None:
+    """The relaunch must not hit EADDRINUSE against the process it just killed."""
+    port = _free_port_number()
+    project = Project(name="demo", path=tmp_path, stack="Py", tasks=(http_server_task(port),))
+    runner.start_project(project)
+
+    try:
+        result = runner.restart_project(project)
+
+        assert result[0].port_ready is True
+    finally:
+        runner.stop_project("demo")
+
+
+def test_start_project_records_usage(tmp_path: Path) -> None:
+    from launchpad import usage
+
+    project = Project(name="demo", path=tmp_path, stack="Py", tasks=(sleeper(),))
+
+    try:
+        runner.start_project(project, wait_for_ports=False)
+
+        assert usage.load()["demo"].count == 1
+    finally:
+        runner.stop_project("demo")
+
+
+def test_free_port_returns_none_when_port_is_idle() -> None:
+    assert runner.free_port(_free_port_number()) is None
+
+
+def test_free_port_kills_the_listening_process(tmp_path: Path) -> None:
+    port = _free_port_number()
+    project = Project(name="squatter", path=tmp_path, stack="Py", tasks=(http_server_task(port),))
+    runner.start_project(project)
+    assert runner.is_port_open(port) is True
+
+    owner = runner.free_port(port)
+
+    try:
+        assert owner is not None
+        assert runner.is_port_open(port) is False
+    finally:
+        runner.stop_project("squatter")
+
+
+def test_wait_for_port_release_returns_true_for_idle_port() -> None:
+    assert runner._wait_for_port_release(_free_port_number(), timeout=1.0) is True
+
+
+def test_wait_for_port_release_times_out_while_port_is_held() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("127.0.0.1", 0))
+        # Backlog must exceed the number of probes: each poll opens a connection
+        # the test server never accepts, and a full backlog would refuse the
+        # next probe, making the port look released when it is not.
+        server.listen(128)
+        port = server.getsockname()[1]
+
+        assert runner._wait_for_port_release(port, timeout=0.6) is False
+
+
+def test_open_editor_raises_when_editor_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LAUNCHPAD_EDITOR", "definitely-not-an-editor-xyz")
+    project = Project(name="demo", path=tmp_path, stack="Py", tasks=())
+
+    with pytest.raises(runner.LaunchError, match="editor not found"):
+        runner.open_editor(project)
+
+
+def _free_port_number() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
 def test_wait_for_port_open_times_out_quickly() -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))

@@ -1,4 +1,4 @@
-"""Textual UI: pick a project, launch its environment, watch status."""
+"""Textual UI: browse projects, launch environments, watch output live."""
 
 from __future__ import annotations
 
@@ -9,26 +9,31 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import DataTable, Footer, Header, Input, Log
 
-from launchpad import runner, state
+from launchpad import gitinfo, logs, preflight, runner, state, usage
 from launchpad.config import Project
 from launchpad.discovery import discover
 
-COLUMNS = ("", "project", "stack", "tasks", "status")
+COLUMNS = ("", "project", "stack", "tasks", "branch")
 RUNNING_MARK = "●"
 IDLE_MARK = "○"
+LOG_POLL_SECONDS = 0.4
+GIT_REFRESH_SECONDS = 10.0
 
 
 class LaunchpadApp(App[None]):
     CSS = """
     Input { display: none; }
     Input.visible { display: block; }
-    Log { height: 8; border-top: solid $accent; }
+    Log { height: 12; border-top: solid $accent; }
     """
 
     BINDINGS = [
         Binding("enter", "launch", "launch"),
         Binding("e", "editor", "editor"),
         Binding("s", "stop", "stop"),
+        Binding("R", "restart", "restart"),
+        Binding("d", "doctor", "doctor"),
+        Binding("f", "force", "force"),
         Binding("slash", "filter", "filter"),
         Binding("r", "rescan", "rescan"),
         Binding("q", "quit", "quit"),
@@ -39,6 +44,9 @@ class LaunchpadApp(App[None]):
         self.root = root
         self.projects: list[Project] = []
         self.visible: list[Project] = []
+        self.git: dict[str, gitinfo.GitStatus] = {}
+        self._followers: dict[str, logs.LogFollower] = {}
+        self._followed_project: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -50,14 +58,16 @@ class LaunchpadApp(App[None]):
 
     def on_mount(self) -> None:
         self.title = "launchpad"
-        table = self.query_one("#projects", DataTable)
-        table.add_columns(*COLUMNS)
+        self.query_one("#projects", DataTable).add_columns(*COLUMNS)
         self.action_rescan()
+        self.set_interval(LOG_POLL_SECONDS, self._pump_logs)
+        self.set_interval(GIT_REFRESH_SECONDS, self._refresh_git)
 
     # -- actions ---------------------------------------------------------
 
     def action_rescan(self) -> None:
-        self.projects = discover(self.root)
+        self.projects = usage.order_projects(discover(self.root))
+        self._refresh_git()
         self._apply_filter(self.query_one("#filter", Input).value)
         self._log(f"scanned {self.root} — {len(self.projects)} projects")
 
@@ -67,20 +77,29 @@ class LaunchpadApp(App[None]):
         field.focus()
 
     def action_launch(self) -> None:
+        self._launch(force=False)
+
+    def action_force(self) -> None:
+        self._launch(force=True)
+
+    def action_restart(self) -> None:
         project = self._selected()
         if project is None:
             return
-        self._log(f"→ {project.name}")
-        try:
-            runner.open_editor(project)
-            self._log(f"  ✓ editor {project.path}")
-            for result in runner.start_project(project):
-                port = f":{result.port}" if result.port else ""
-                ready = "" if result.port is None else (" ready" if result.port_ready else " (port not up yet)")
-                self._log(f"  ✓ {result.task} pid {result.pid} {port}{ready}")
-        except runner.LaunchError as exc:
-            self._log(f"  ✗ {exc}")
-        self._refresh_rows()
+        self._log(f"⟳ {project.name}")
+        # Ports are held by the processes being replaced, so skip that check.
+        for check in preflight.check_project(project, check_ports=False):
+            if check.level != "ok":
+                self._log(f"  {check.render()}")
+        self._run_launch(project, lambda: runner.restart_project(project))
+
+    def action_doctor(self) -> None:
+        project = self._selected()
+        if project is None:
+            return
+        self._log(f"⌕ {project.name}")
+        for check in preflight.check_project(project):
+            self._log(f"  {check.render()}")
 
     def action_editor(self) -> None:
         project = self._selected()
@@ -98,6 +117,7 @@ class LaunchpadApp(App[None]):
             return
         stopped = runner.stop_project(project.name)
         self._log(f"■ {project.name}: stopped {', '.join(stopped) if stopped else 'nothing'}")
+        self._reset_followers()
         self._refresh_rows()
 
     # -- events ----------------------------------------------------------
@@ -109,7 +129,74 @@ class LaunchpadApp(App[None]):
         event.input.remove_class("visible")
         self.query_one("#projects", DataTable).focus()
 
-    # -- helpers ---------------------------------------------------------
+    # -- launching -------------------------------------------------------
+
+    def _launch(self, *, force: bool) -> None:
+        project = self._selected()
+        if project is None:
+            return
+        self._log(f"→ {project.name}")
+
+        checks = preflight.check_project(project)
+        for check in checks:
+            if check.level != "ok":
+                self._log(f"  {check.render()}")
+        blockers = preflight.blocking(checks)
+        if blockers and not force:
+            self._log("  ✗ pre-flight failed — press f to force")
+            return
+        if blockers and force:
+            for task in project.tasks:
+                if task.port is None:
+                    continue
+                owner = runner.free_port(task.port)
+                if owner is not None:
+                    self._log(f"  ■ freed port {task.port} — killed {owner.render()}")
+
+        try:
+            runner.open_editor(project)
+            self._log(f"  ✓ editor {project.path}")
+        except runner.LaunchError as exc:
+            self._log(f"  ✗ {exc}")
+        self._run_launch(project, lambda: runner.start_project(project))
+
+    def _run_launch(self, project: Project, launch) -> None:  # noqa: ANN001 - local callable
+        try:
+            for result in launch():
+                port = f":{result.port}" if result.port else ""
+                ready = "" if result.port is None else (" ready" if result.port_ready else " (port not up yet)")
+                self._log(f"  ✓ {result.task} pid {result.pid} {port}{ready}")
+        except runner.LaunchError as exc:
+            self._log(f"  ✗ {exc}")
+        self._reset_followers()
+        self._refresh_rows()
+
+    # -- log streaming ---------------------------------------------------
+
+    def _pump_logs(self) -> None:
+        project = self._selected()
+        if project is None:
+            return
+        if project.name != self._followed_project:
+            self._reset_followers()
+        for task_name, follower in self._followers.items():
+            for line in follower.poll():
+                self._log(f"[{task_name}] {line}")
+
+    def _reset_followers(self) -> None:
+        project = self._selected()
+        self._followers = {}
+        self._followed_project = project.name if project else None
+        if project is None:
+            return
+        for task in state.for_project(project.name):
+            self._followers[task.task] = logs.LogFollower(Path(task.log_path), from_end=True)
+
+    # -- rendering -------------------------------------------------------
+
+    def _refresh_git(self) -> None:
+        self.git = gitinfo.statuses({p.name: p.path for p in self.projects})
+        self._refresh_rows()
 
     def _apply_filter(self, needle: str) -> None:
         lowered = needle.strip().lower()
@@ -120,23 +207,23 @@ class LaunchpadApp(App[None]):
         table = self.query_one("#projects", DataTable)
         cursor = table.cursor_row
         table.clear()
-        running = {task.project: task for task in state.prune()}
+        running = {task.project for task in state.prune()}
         for project in self.visible:
             active = project.name in running
-            status = f"{RUNNING_MARK} running" if active else f"{IDLE_MARK} —"
+            branch = self.git.get(project.name)
             table.add_row(
-                RUNNING_MARK if active else "",
+                RUNNING_MARK if active else IDLE_MARK,
                 project.name,
                 project.stack,
                 project.summary,
-                status,
+                branch.label() if branch is not None else "",
             )
         if table.row_count:
-            table.move_cursor(row=min(cursor, table.row_count - 1))
+            table.move_cursor(row=min(max(cursor, 0), table.row_count - 1))
 
     def _selected(self) -> Project | None:
         table = self.query_one("#projects", DataTable)
-        if not self.visible or table.cursor_row < 0 or table.cursor_row >= len(self.visible):
+        if not self.visible or not 0 <= table.cursor_row < len(self.visible):
             return None
         return self.visible[table.cursor_row]
 

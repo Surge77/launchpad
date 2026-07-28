@@ -15,10 +15,11 @@ from pathlib import Path
 
 import psutil
 
-from launchpad import state
+from launchpad import preflight, state, usage
 from launchpad.config import PORT_POLL_INTERVAL, PORT_WAIT_SECONDS, Project, Task
 
 TERMINATE_GRACE_SECONDS = 5.0
+PORT_RELEASE_SECONDS = 10.0
 
 
 class LaunchError(Exception):
@@ -38,7 +39,41 @@ class LaunchResult:
 def start_project(project: Project, *, wait_for_ports: bool = True) -> list[LaunchResult]:
     if not project.tasks:
         raise LaunchError(f"{project.name}: no tasks to run")
-    return [start_task(project, task, wait_for_port=wait_for_ports) for task in project.tasks]
+    results = [start_task(project, task, wait_for_port=wait_for_ports) for task in project.tasks]
+    usage.record_launch(project.name)
+    return results
+
+
+def restart_project(project: Project, *, wait_for_ports: bool = True) -> list[LaunchResult]:
+    """Stop everything tracked for the project, then start it again.
+
+    Ports need a moment to leave TIME_WAIT after teardown, otherwise the
+    relaunch hits EADDRINUSE against its own corpse.
+    """
+    stop_project(project.name)
+    for task in project.tasks:
+        if task.port is not None:
+            _wait_for_port_release(task.port)
+    return start_project(project, wait_for_ports=wait_for_ports)
+
+
+def _wait_for_port_release(port: int, timeout: float = PORT_RELEASE_SECONDS) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not is_port_open(port):
+            return True
+        time.sleep(PORT_POLL_INTERVAL)
+    return False
+
+
+def free_port(port: int) -> preflight.PortOwner | None:
+    """Kill whatever is listening on `port`. Destructive — callers must opt in."""
+    owner = preflight.port_owner(port)
+    if owner is None or owner.pid <= 0:
+        return None
+    _kill_tree(owner.pid)
+    _wait_for_port_release(port)
+    return owner
 
 
 def start_task(project: Project, task: Task, *, wait_for_port: bool = True) -> LaunchResult:
