@@ -78,7 +78,7 @@ def test_occupied_port_is_blocking_and_names_the_owner(tmp_path: Path) -> None:
 
         blockers = preflight.blocking(checks)
         assert blockers, "a bound port must block launch"
-        assert f"port {port} already held" in blockers[0].message
+        assert f"port {port}" in blockers[0].message
 
 
 def test_check_ports_false_ignores_an_occupied_port(tmp_path: Path) -> None:
@@ -125,12 +125,51 @@ def test_port_owner_reads_supplied_map() -> None:
 
 
 def test_listening_ports_finds_a_bound_socket() -> None:
+    """Owner identification is privileged on macOS; skip rather than assert root."""
+    if not preflight.listening_ports():
+        pytest.skip("psutil.net_connections requires elevated privileges here")
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.bind(("127.0.0.1", 0))
         server.listen(1)
         port = server.getsockname()[1]
 
         assert port in preflight.listening_ports()
+
+
+def test_is_listening_detects_a_bound_socket_without_privileges() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+
+        assert preflight.is_listening(port) is True
+
+
+def test_is_listening_false_for_closed_port() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    assert preflight.is_listening(port) is False
+
+
+def test_busy_port_blocks_even_when_owner_cannot_be_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unprivileged runs must still refuse to launch onto an occupied port."""
+    monkeypatch.setattr(preflight, "listening_ports", dict)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+
+        checks = preflight.check_project(project(tmp_path, Task(name="web", cmd=f"{PYTHON} -V", port=port)))
+
+        blockers = preflight.blocking(checks)
+        assert blockers
+        assert "already in use" in blockers[0].message
 
 
 def test_port_owner_renders_pid_and_name() -> None:

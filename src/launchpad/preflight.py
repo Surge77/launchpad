@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shlex
 import shutil
+import socket
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ from launchpad.config import Project
 Level = Literal["ok", "warn", "error"]
 
 ENV_EXAMPLE_NAMES = (".env.example", ".env.sample", ".env.template")
+PROBE_TIMEOUT_SECONDS = 0.3
 MARK = {"ok": "✓", "warn": "!", "error": "✗"}
 
 
@@ -78,9 +80,21 @@ def _executable_check(cmd: str, task_name: str) -> Check:
 
 def _port_check(task_name: str, port: int) -> Check:
     owner = port_owner(port)
-    if owner is None:
-        return Check("ok", f"{task_name}: port {port} free")
-    return Check("error", f"{task_name}: port {port} already held by {owner.render()}")
+    if owner is not None:
+        return Check("error", f"{task_name}: port {port} already held by {owner.render()}")
+    # Naming the owner needs root on macOS, so a TCP probe is the source of
+    # truth for *whether* the port is taken. Without this, an unprivileged run
+    # would call a busy port free and hand the user an EADDRINUSE crash.
+    if is_listening(port):
+        return Check("error", f"{task_name}: port {port} already in use (owner unknown — needs root to identify)")
+    return Check("ok", f"{task_name}: port {port} free")
+
+
+def is_listening(port: int, host: str = "127.0.0.1") -> bool:
+    """True if something accepts TCP connections on `port`. Needs no privileges."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(PROBE_TIMEOUT_SECONDS)
+        return probe.connect_ex((host, port)) == 0
 
 
 def _env_checks(project: Project) -> list[Check]:

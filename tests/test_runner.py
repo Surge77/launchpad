@@ -160,12 +160,13 @@ def test_restart_frees_its_own_port_before_relaunch(tmp_path: Path) -> None:
     """The relaunch must not hit EADDRINUSE against the process it just killed."""
     port = _free_port_number()
     project = Project(name="demo", path=tmp_path, stack="Py", tasks=(http_server_task(port),))
-    runner.start_project(project)
+    first = runner.start_project(project)
+    _require_serving(first[0])
 
     try:
         result = runner.restart_project(project)
 
-        assert result[0].port_ready is True
+        assert result[0].port_ready is True, _log_dump(result[0])
     finally:
         runner.stop_project("demo")
 
@@ -190,16 +191,31 @@ def test_free_port_returns_none_when_port_is_idle() -> None:
 def test_free_port_kills_the_listening_process(tmp_path: Path) -> None:
     port = _free_port_number()
     project = Project(name="squatter", path=tmp_path, stack="Py", tasks=(http_server_task(port),))
-    runner.start_project(project)
-    assert runner.is_port_open(port) is True
+    started = runner.start_project(project)
+    _require_serving(started[0])
 
     owner = runner.free_port(port)
 
     try:
-        assert owner is not None
+        assert owner is not None, "free_port must report which process it killed"
         assert runner.is_port_open(port) is False
     finally:
         runner.stop_project("squatter")
+
+
+def _log_dump(result: runner.LaunchResult) -> str:
+    """Failure message carrying the child's own output — otherwise a CI failure
+    on another OS says only 'False is not True'."""
+    try:
+        body = Path(result.log_path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        body = f"<log unreadable: {exc}>"
+    return f"task {result.task} port {result.port} not ready.\n--- log ---\n{body}"
+
+
+def _require_serving(result: runner.LaunchResult) -> None:
+    if not result.port_ready:
+        pytest.fail(_log_dump(result))
 
 
 def test_wait_for_port_release_returns_true_for_idle_port() -> None:
