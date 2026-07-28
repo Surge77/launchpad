@@ -114,6 +114,21 @@ port = 5173
 open = true
 ```
 
+## Generated configuration (`launch new`)
+
+Scaffolded projects arrive with a `launcher.toml` already written, so `launch up <name>` works immediately.
+
+| Stack | Generated tasks | Ports |
+|-------|-----------------|-------|
+| `next` | `web` → `pnpm dev` | 3000, opens browser |
+| `mern` | `api` → `npm run dev` (server/), then `web` → `npm run dev` (client/) | 5000, then 5173 opening the browser |
+| `spring` | `api` → `mvn spring-boot:run` | 8080 |
+| `fastapi` | `api` → `uv run uvicorn app.main:app --reload` | 8000, opens browser |
+
+For `mern` the ordering matters: `api` is listed first and carries a port, so the client only starts once the API is actually accepting connections.
+
+Each also gets `.env.example`, `docker-compose.yml` for its datastore, a README, and a git repository with one commit.
+
 ## Auto-detection rules
 
 Used only when no `launcher.toml` exists. Root manifests are checked first; if none are found, immediate subdirectories are scanned and each becomes a task named after its directory.

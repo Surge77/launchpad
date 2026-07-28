@@ -46,6 +46,15 @@ def _dispatch(args: argparse.Namespace, root: Path) -> int:
         return commands.cmd_doctor(root, args.name)
     if args.command == "logs":
         return commands.cmd_logs(args.name, follow=args.follow, lines=args.lines)
+    if args.command == "new":
+        return commands.cmd_new(
+            root,
+            args.name,
+            args.stack,
+            dry_run=args.dry_run,
+            git=not args.no_git,
+            github=args.github,
+        )
     raise AssertionError(f"unhandled command: {args.command}")
 
 
@@ -83,6 +92,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser("doctor", help="diagnose why a project would fail to launch")
     doctor.add_argument("name", nargs="?", help="omit to audit every project")
+
+    new = sub.add_parser("new", help="scaffold a new project from a stack template")
+    new.add_argument("name", nargs="?", help="project name; omit to list available stacks")
+    new.add_argument("--stack", help="next | mern | spring | fastapi")
+    new.add_argument("--dry-run", action="store_true", help="print the plan without running it")
+    new.add_argument("--no-git", action="store_true", help="skip git init and the first commit")
+    new.add_argument(
+        "--github",
+        choices=("none", "public", "private"),
+        default="none",
+        help="also create and push a GitHub repo (default: none)",
+    )
 
     log_view = sub.add_parser("logs", help="show a project's task logs")
     log_view.add_argument("name")

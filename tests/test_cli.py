@@ -17,7 +17,7 @@ def isolated_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def passing_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default to a clean pre-flight; tests that care override it explicitly."""
-    monkeypatch.setattr(preflight, "check_project", lambda project, check_ports=True: [])
+    monkeypatch.setattr(preflight, "check_project", lambda project, check_ports=True, listeners=None: [])
 
 
 @pytest.fixture
@@ -148,7 +148,7 @@ def test_up_blocks_on_preflight_error(
     monkeypatch.setattr(
         preflight,
         "check_project",
-        lambda project, check_ports=True: [preflight.Check("error", "port 3000 held by pid 9 (node.exe)")],
+        lambda project, check_ports=True, listeners=None: [preflight.Check("error", "port 3000 held by pid 9 (node.exe)")],
     )
     started: list[str] = []
     monkeypatch.setattr(runner, "start_project", lambda project, wait_for_ports=True: started.append("no") or [])
@@ -169,7 +169,7 @@ def test_force_frees_the_port_then_launches(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(
-        preflight, "check_project", lambda project, check_ports=True: [preflight.Check("error", "port 3000 held")]
+        preflight, "check_project", lambda project, check_ports=True, listeners=None: [preflight.Check("error", "port 3000 held")]
     )
     monkeypatch.setattr(preflight, "is_listening", lambda port, host="127.0.0.1": True)
     monkeypatch.setattr(runner, "free_port", lambda port: preflight.PortOwner(pid=9, name="node.exe"))
@@ -189,7 +189,7 @@ def test_force_aborts_when_a_port_cannot_be_freed(
 ) -> None:
     """--force must not proceed into an EADDRINUSE crash it can't prevent."""
     monkeypatch.setattr(
-        preflight, "check_project", lambda project, check_ports=True: [preflight.Check("error", "port 3000 held")]
+        preflight, "check_project", lambda project, check_ports=True, listeners=None: [preflight.Check("error", "port 3000 held")]
     )
     monkeypatch.setattr(preflight, "is_listening", lambda port, host="127.0.0.1": True)
     monkeypatch.setattr(runner, "free_port", lambda port: None)
@@ -212,7 +212,7 @@ def test_up_warns_but_proceeds_on_warning_level_check(
     monkeypatch.setattr(
         preflight,
         "check_project",
-        lambda project, check_ports=True: [preflight.Check("warn", ".env.example exists but .env is missing")],
+        lambda project, check_ports=True, listeners=None: [preflight.Check("warn", ".env.example exists but .env is missing")],
     )
 
     exit_code = cli.main(["--root", str(workspace), "up", "collabboard", "--no-editor"])
@@ -255,7 +255,7 @@ def test_restart_skips_port_conflict_checks(workspace: Path, monkeypatch: pytest
     monkeypatch.setattr(
         preflight,
         "check_project",
-        lambda project, check_ports=True: seen.append(check_ports) or [],
+        lambda project, check_ports=True, listeners=None: seen.append(check_ports) or [],
     )
     monkeypatch.setattr(runner, "restart_project", lambda project, wait_for_ports=True: [])
 
@@ -282,7 +282,7 @@ def test_doctor_returns_nonzero_when_blocked(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(
-        preflight, "check_project", lambda project, check_ports=True: [preflight.Check("error", "'pnpm' not on PATH")]
+        preflight, "check_project", lambda project, check_ports=True, listeners=None: [preflight.Check("error", "'pnpm' not on PATH")]
     )
 
     exit_code = cli.main(["--root", str(workspace), "doctor"])

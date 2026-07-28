@@ -81,9 +81,32 @@ All reads tolerate corruption: malformed JSON or entries with missing/mistyped k
 
 Tests never call the network, and every test that touches state redirects `LAUNCHPAD_HOME` into `tmp_path` via an autouse fixture, keeping them order-independent.
 
+## Scaffolding (`launch new`)
+
+`scaffold/` wraps each ecosystem's own generator rather than shipping boilerplate:
+
+```
+scaffold/
+  plan.py         Command | FileSpec | Download steps, Recipe, Plan
+  engine.py       name validation, step execution, zip extraction, git/gh
+  files.py        glue every stack gets: launcher.toml, .env.example, README, compose
+  recipes.py      registry
+  recipes_node.py     next  -> create-next-app;  mern -> create-vite + our Express API
+  recipes_jvm.py      spring -> start.spring.io starter.zip
+  recipes_python.py   fastapi -> uv init --bare
+```
+
+The generator writes a `launcher.toml`, so a project is launchable the moment it exists — `launch new x` then `launch up x`. That is the reason scaffolding lives here rather than in a separate tool.
+
+Invariants:
+
+- **Project names are allow-listed, never escaped.** They reach both argv and the filesystem. `validate_name` permits `[a-z0-9][a-z0-9._-]{0,63}`, and rejects `..`, trailing dots, and Windows device names (`con`, `nul`, `com1`…).
+- **Downloads are HTTPS-only and extracted defensively.** Every zip entry is resolved and checked against the target directory before extraction, so a crafted archive cannot escape it (zip slip).
+- **A failed scaffold leaves the directory in place.** Partial output may contain work; deleting a user's directory is not the tool's call.
+- **A generated project must pass its own checks on a clean machine.** FastAPI ships `pytest.ini` so `app` is importable; Spring ships H2 test properties so `mvn test` needs no database. A scaffold whose tests fail on first run is a broken scaffold.
+
 ## Deliberate non-goals
 
-- **Not a scaffolder.** `launch new` is out of scope; there are good generators per ecosystem.
 - **Not a container orchestrator.** If your stack is compose-shaped, make `docker compose up` a task.
 - **Not a version manager.** Use `mise`/`nvm`/`asdf`; launchpad only reports when a binary is missing.
 - **No dependency graph.** Sequential start plus port-readiness covers real ordering needs; a DAG would be configuration for its own sake.

@@ -4,6 +4,30 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/).
 
+## [0.2.0] — 2026-07-28
+
+### Added
+
+- **`launch new <name> --stack <stack>`** — scaffold a project by wrapping each ecosystem's real generator, then writing the glue. Supported stacks: `next` (create-next-app + Prisma + Auth.js v5), `mern` (create-vite + an Express/Mongoose API), `spring` (start.spring.io), `fastapi` (uv). Flags: `--dry-run`, `--no-git`, `--github public|private`.
+- Every generated project ships `launcher.toml`, so `launch new x && launch up x` works with no further setup.
+
+### Fixed
+
+Found by actually running all four generators end to end:
+
+- **Spring**: generated projects could not pass `mvn test` — the context demanded a live Postgres. They now ship H2 test properties and run green with no database.
+- **FastAPI**: generated tests failed with `ModuleNotFoundError: No module named 'app'`; a `pytest.ini` now puts the project root on the path. `uv init --bare` also stops uv leaving a stray sample `main.py`.
+- **Next.js**: Prisma 7 removed `url` from the schema datasource and no longer exports `PrismaClient` from `@prisma/client`, so generated projects failed type-check. Pinned to Prisma 6 and added a `prisma generate` step; `pnpm build` now succeeds.
+- **MERN**: the API crashed with a raw stack trace when `MONGODB_URI` was unset; it now prints the two commands that fix it and exits cleanly.
+- `--github` without git was accepted but could never push. Rejected up front.
+- Scaffolding onto a path occupied by a *file* crashed instead of reporting the conflict.
+- Project names ending in `.` were accepted, though Windows silently strips the dot.
+
+### Performance
+
+- **`launch doctor` across a workspace: 4089 ms → 265 ms (15×).** Profiling showed 94% of the runtime in `socket.connect_ex`: probing a *closed* loopback port burns the full connect timeout on Windows, and it ran once per port. The psutil socket table already answers the question in under a millisecond, so the probe is now the fallback for when that table is unavailable (unprivileged macOS) rather than the default path.
+- Socket enumeration happens once per audit instead of once per task, and PATH lookups are cached — 21 `shutil.which` calls had been stat-ing every PATH entry against every PATHEXT.
+
 ## [0.1.0] — 2026-07-28
 
 First release.

@@ -26,6 +26,8 @@ These are not style preferences. Violating them breaks correctness or safety.
 5. **Keep discovery subprocess-free.** `launch ls` is measured at ~151 ms for 32 repos, and the README states that number. Anything spawning a process per repo must be opt-in and threaded, like `gitinfo`.
 6. **Frozen dataclasses stay frozen.** `Project`, `Task`, `Check`, `GitStatus`, `RunningTask`.
 7. **Tolerate corrupt state.** All JSON reads skip malformed entries rather than raising. A truncated `state.json` must never brick the tool.
+8. **Never probe a port when the socket table is available.** `connect_ex` against a closed loopback port costs a full timeout on Windows (~300 ms); it made `launch doctor` take 4 s. The probe exists only as a fallback for unprivileged macOS, where `psutil.net_connections` returns nothing.
+9. **A scaffolded project must pass its own checks on a clean machine** — no database, no Docker, no network beyond install. If you add or change a stack recipe, actually run the generator and then run that project's own build/test command before claiming it works. Every stack bug so far was invisible to unit tests.
 
 ## Testing expectations
 
@@ -48,6 +50,7 @@ These are not style preferences. Violating them breaks correctness or safety.
 | Change spawn/teardown behavior | `runner.py` |
 | Change what's persisted | `state.py` (running procs) or `usage.py` (frecency) |
 | Change TUI layout/keys | `tui.py` |
+| Add a scaffold stack | `scaffold/recipes_*.py`, then register in `scaffold/recipes.py` |
 
 ## Verification before claiming done
 

@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from launchpad import gitinfo, logs, preflight, runner, state, usage
+from launchpad import gitinfo, logs, preflight, runner, scaffold, state, usage
 from launchpad.config import Project
 from launchpad.discovery import discover
 
@@ -179,6 +179,8 @@ def cmd_doctor(root: Path, name: str | None) -> int:
         return 1
 
     audit_all = name is None
+    # One socket enumeration for the whole audit, not one per project.
+    listeners = preflight.listening_ports()
     problems = 0
     for project in projects:
         # A library or CLI with nothing to serve is not broken, so a workspace-wide
@@ -186,7 +188,7 @@ def cmd_doctor(root: Path, name: str | None) -> int:
         if audit_all and not project.tasks:
             continue
 
-        checks = preflight.check_project(project)
+        checks = preflight.check_project(project, listeners=listeners)
         noteworthy = [check for check in checks if check.level != "ok"]
         if audit_all and not noteworthy:
             continue
@@ -200,6 +202,68 @@ def cmd_doctor(root: Path, name: str | None) -> int:
         return 1
     print("\nno blocking issues")
     return 0
+
+
+def cmd_new(
+    root: Path,
+    name: str | None,
+    stack: str | None,
+    *,
+    dry_run: bool,
+    git: bool,
+    github: str,
+) -> int:
+    if stack is None or name is None:
+        return _list_stacks(stack, name)
+
+    try:
+        recipe = scaffold.find_recipe(stack)
+        plan = scaffold.build_plan(recipe, name, root, git=git, github=github)
+    except scaffold.ScaffoldError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 1
+
+    absent = scaffold.missing_tools(recipe)
+    if absent and not dry_run:
+        print(f"✗ {recipe.title} needs {', '.join(absent)} on PATH", file=sys.stderr)
+        return 1
+
+    if dry_run:
+        print("\n".join(scaffold.describe(plan)))
+        return 0
+
+    print(f"→ creating {plan.name} ({recipe.title})")
+    try:
+        target = scaffold.execute(plan)
+    except scaffold.ScaffoldError as exc:
+        sys.stdout.flush()
+        print(f"✗ {exc}", file=sys.stderr)
+        # Deliberately not deleted: a half-built project may hold work worth
+        # keeping, and removing a user's directory is not ours to decide.
+        print(f"  partial project left at {plan.target}", file=sys.stderr)
+        return 1
+
+    print(f"\n✓ {target}")
+    print(f"  launch up {plan.name}      # editor + every service, in one keystroke")
+    print(f"  launch doctor {plan.name}  # check prerequisites first")
+    return 0
+
+
+def _list_stacks(stack: str | None, name: str | None) -> int:
+    incomplete = stack is not None or name is not None
+    if stack is not None:
+        print(f"missing project name: launch new <name> --stack {stack}", file=sys.stderr)
+    elif name is not None:
+        print(f"missing stack: launch new {name} --stack <stack>", file=sys.stderr)
+    print("available stacks:" if not incomplete else "\navailable stacks:")
+    for recipe in scaffold.all_recipes():
+        absent = scaffold.missing_tools(recipe)
+        status = f"  (needs {', '.join(absent)})" if absent else ""
+        print(f"  {recipe.key:<9} {recipe.title:<22} {recipe.summary}{status}")
+    if not incomplete:
+        print("\nlaunch new <name> --stack <stack>")
+    # Browsing the catalogue succeeded; only a half-specified command is an error.
+    return 1 if incomplete else 0
 
 
 def cmd_logs(name: str, *, follow: bool, lines: int) -> int:

@@ -7,6 +7,7 @@ import shutil
 import socket
 import sys
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -39,22 +40,31 @@ class PortOwner:
         return f"pid {self.pid} ({self.name})"
 
 
-def check_project(project: Project, *, check_ports: bool = True) -> list[Check]:
+def check_project(
+    project: Project,
+    *,
+    check_ports: bool = True,
+    listeners: dict[int, PortOwner] | None = None,
+) -> list[Check]:
     """Audit a project before launch.
 
     `check_ports=False` is for restarts: the port is expected to be held by the
     very process being replaced, so reporting it as a conflict is noise.
+
+    `listeners` lets a caller auditing many projects enumerate sockets once
+    instead of once per task.
     """
     checks: list[Check] = []
     if not project.tasks:
         return [Check("error", f"no tasks — add launcher.toml to {project.path}")]
 
-    checks.extend(_task_checks(project, check_ports=check_ports))
+    ports = listeners if listeners is not None else listening_ports()
+    checks.extend(_task_checks(project, check_ports=check_ports, listeners=ports))
     checks.extend(_env_checks(project))
     return checks
 
 
-def _task_checks(project: Project, *, check_ports: bool) -> list[Check]:
+def _task_checks(project: Project, *, check_ports: bool, listeners: dict[int, PortOwner]) -> list[Check]:
     checks: list[Check] = []
     for task in project.tasks:
         checks.append(_executable_check(task.cmd, task.name))
@@ -64,8 +74,20 @@ def _task_checks(project: Project, *, check_ports: bool) -> list[Check]:
             checks.append(Check("error", f"{task.name}: cwd missing — {cwd}"))
 
         if task.port is not None and check_ports:
-            checks.append(_port_check(task.name, task.port))
+            checks.append(_port_check(task.name, task.port, listeners))
     return checks
+
+
+@lru_cache(maxsize=256)
+def _resolve(executable: str) -> str | None:
+    """Cached PATH lookup.
+
+    Auditing a workspace checks the same handful of tools (npm, mvn, uv) once
+    per project, and each `shutil.which` miss stats every PATH entry against
+    every PATHEXT. Cached for the process lifetime, so a tool installed while
+    the TUI is open is not picked up until restart — an acceptable trade.
+    """
+    return shutil.which(executable)
 
 
 def _executable_check(cmd: str, task_name: str) -> Check:
@@ -73,18 +95,22 @@ def _executable_check(cmd: str, task_name: str) -> Check:
     if not argv:
         return Check("error", f"{task_name}: empty command")
     executable = argv[0].strip('"')
-    if shutil.which(executable) is None:
+    if _resolve(executable) is None:
         return Check("error", f"{task_name}: '{executable}' not on PATH")
     return Check("ok", f"{task_name}: {executable} found")
 
 
-def _port_check(task_name: str, port: int) -> Check:
-    owner = port_owner(port)
+def _port_check(task_name: str, port: int, listeners: dict[int, PortOwner]) -> Check:
+    owner = port_owner(port, listeners)
     if owner is not None:
         return Check("error", f"{task_name}: port {port} already held by {owner.render()}")
-    # Naming the owner needs root on macOS, so a TCP probe is the source of
-    # truth for *whether* the port is taken. Without this, an unprivileged run
-    # would call a busy port free and hand the user an EADDRINUSE crash.
+    if listeners:
+        # A populated map enumerated every listening socket, so absence proves
+        # the port is free. Probing anyway costs a full connect timeout per port
+        # on Windows — 300ms each, which dominated `launch doctor`.
+        return Check("ok", f"{task_name}: port {port} free")
+    # Empty map means enumeration was denied (unprivileged macOS). Fall back to
+    # a probe: reporting a busy port as free would hand the user an EADDRINUSE.
     if is_listening(port):
         return Check("error", f"{task_name}: port {port} already in use (owner unknown — needs root to identify)")
     return Check("ok", f"{task_name}: port {port} free")

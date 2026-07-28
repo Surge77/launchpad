@@ -114,6 +114,47 @@ def test_free_port_passes(tmp_path: Path) -> None:
     assert not preflight.blocking(checks)
 
 
+def test_free_port_check_skips_the_probe_when_the_map_is_populated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Probing a closed port costs a full connect timeout on Windows (~300ms);
+    a populated listener map already proves the port is free."""
+    probes: list[int] = []
+    monkeypatch.setattr(preflight, "is_listening", lambda port, host="127.0.0.1": probes.append(port) or False)
+    listeners = {9999: preflight.PortOwner(pid=1, name="other.exe")}
+
+    checks = preflight.check_project(
+        project(tmp_path, Task(name="web", cmd=f"{PYTHON} -V", port=3000)), listeners=listeners
+    )
+
+    assert not preflight.blocking(checks)
+    assert probes == [], "must not probe when the socket table is available"
+
+
+def test_empty_listener_map_still_falls_back_to_probing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    probes: list[int] = []
+    monkeypatch.setattr(preflight, "is_listening", lambda port, host="127.0.0.1": probes.append(port) or True)
+
+    checks = preflight.check_project(
+        project(tmp_path, Task(name="web", cmd=f"{PYTHON} -V", port=3000)), listeners={}
+    )
+
+    assert probes == [3000]
+    assert preflight.blocking(checks)
+
+
+def test_supplied_listener_map_is_not_re_enumerated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    monkeypatch.setattr(preflight, "listening_ports", lambda: calls.append(1) or {})
+
+    preflight.check_project(
+        project(tmp_path, Task(name="a", cmd=f"{PYTHON} -V", port=1), Task(name="b", cmd=f"{PYTHON} -V", port=2)),
+        listeners={5: preflight.PortOwner(pid=1, name="x")},
+    )
+
+    assert calls == [], "caller-supplied map must be reused"
+
+
 def test_port_owner_returns_none_for_free_port() -> None:
     assert preflight.port_owner(1, host_ports={}) is None
 
